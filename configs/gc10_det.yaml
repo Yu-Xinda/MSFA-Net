@@ -1,0 +1,5 @@
+# GC10-DET experiment configuration.
+dataset: gc10_det
+data_root: data/GC10-DET
+data_yaml: data/GC10-DET/yolo/gc10_det.yaml
+save_dir: runs

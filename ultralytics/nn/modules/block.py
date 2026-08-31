@@ -41,6 +41,7 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
+    "FrequencyAdaptiveModulation",
     "GhostBottleneck",
     "HGBlock",
     "HGStem",
@@ -78,6 +79,35 @@ class DFL(nn.Module):
         b, _, a = x.shape  # batch, channels, anchors
         return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
         # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
+
+
+class FrequencyAdaptiveModulation(nn.Module):
+    """Scale-aware low/mid/high-frequency modulation for detection features."""
+
+    def __init__(self, c1: int, c2: int):
+        """Initialize the frequency-adaptive modulation block."""
+        super().__init__()
+        self.proj = Conv(c1, c2, 1) if c1 != c2 else nn.Identity()
+        hidden = max(c2 // 16, 8)
+        self.low_filter = Conv(c2, c2, 1, act=False)
+        self.high_filter = DWConv(c2, c2, 3)
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c2, hidden, 1),
+            nn.SiLU(),
+            nn.Conv2d(hidden, c2 * 2, 1),
+            nn.Sigmoid(),
+        )
+        self.low_scale = nn.Parameter(torch.tensor(0.05))
+        self.high_scale = nn.Parameter(torch.tensor(0.20))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Blend low-frequency context, mid-frequency structure, and high-frequency detail."""
+        x = self.proj(x)
+        low = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
+        high = x - low
+        g_low, g_high = self.gate(x).chunk(2, 1)
+        return x + self.low_scale.tanh() * g_low * self.low_filter(low) + self.high_scale.tanh() * g_high * self.high_filter(high)
 
 
 class Proto(nn.Module):

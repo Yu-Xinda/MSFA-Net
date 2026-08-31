@@ -19,7 +19,6 @@ class TaskAlignedAssigner(nn.Module):
 
     Attributes:
         topk (int): The number of top candidates to consider.
-        topk2 (int): Secondary topk value for additional filtering.
         num_classes (int): The number of object classes.
         alpha (float): The alpha parameter for the classification component of the task-aligned metric.
         beta (float): The beta parameter for the localization component of the task-aligned metric.
@@ -102,7 +101,8 @@ class TaskAlignedAssigner(nn.Module):
         # Recover outside the except block: exiting it drops e.__traceback__, releasing the failed attempt's GPU
         # intermediates back to the allocator so the copy-back below can succeed
         LOGGER.warning("CUDA OutOfMemoryError in TaskAlignedAssigner, using CPU")
-        result = self._forward(*(t.cpu() for t in (pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt)))
+        cpu_args = [pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt]
+        result = self._forward(*(t.cpu() for t in cpu_args))
         return tuple(t.to(device) for t in result)
 
     def _forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
@@ -199,8 +199,7 @@ class TaskAlignedAssigner(nn.Module):
         gt_boxes = gt_bboxes.unsqueeze(2).expand(-1, -1, na, -1)[mask_gt]
         overlaps[mask_gt] = self.iou_calculation(gt_boxes, pd_boxes)
 
-        align_metric = bbox_scores.pow(self.alpha) * overlaps.pow(self.beta)
-        return align_metric, overlaps
+        return bbox_scores.pow(self.alpha) * overlaps.pow(self.beta), overlaps
 
     def iou_calculation(self, gt_bboxes, pd_bboxes):
         """Calculate IoU for horizontal bounding boxes.

@@ -1,0 +1,5 @@
+# NEU-DET experiment configuration.
+dataset: neu_det
+data_root: /data/yca/project/data/NEU-DET
+data_yaml: /data/yca/project/data/NEU-DET/yolo/neu_det.yaml
+save_dir: runs

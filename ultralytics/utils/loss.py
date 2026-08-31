@@ -126,9 +126,12 @@ class BboxLoss(nn.Module):
         fg_mask: torch.Tensor,
         imgsz: torch.Tensor,
         stride: torch.Tensor,
+        dahl_weight: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
+        if dahl_weight is not None:
+            weight = weight * dahl_weight[fg_mask].to(weight.dtype)
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
@@ -351,6 +354,7 @@ class v8DetectionLoss:
         self.no = m.nc + m.reg_max * 4
         self.reg_max = m.reg_max
         self.device = device
+        self.model = model
 
         self.use_dfl = m.reg_max > 1
 
@@ -358,6 +362,14 @@ class v8DetectionLoss:
         self.class_weights = getattr(model, "class_weights", None)
         if self.class_weights is not None:
             self.class_weights = self.class_weights.to(device).view(1, 1, -1)
+        self.dahl_loss = getattr(h, "dahl_loss", False)
+        self.dahl_gain = float(getattr(h, "dahl_gain", 0.6))
+        self.dahl_gamma = float(getattr(h, "dahl_gamma", 1.5))
+        self.dahl_max_gain = max(float(getattr(h, "dahl_max_gain", 1.8)), 1.0)
+        self.hfcd_loss = getattr(h, "hfcd_loss", False)
+        self.hfcd_gain = max(float(getattr(h, "hfcd_gain", 0.05)), 0.0)
+        self.hfcd_beta = max(float(getattr(h, "hfcd_beta", 1.0)), 0.0)
+        self.hfcd_warmup_epochs = max(float(getattr(h, "hfcd_warmup_epochs", 10.0)), 0.0)
 
         self.assigner = TaskAlignedAssigner(
             topk=tal_topk,
@@ -401,7 +413,7 @@ class v8DetectionLoss:
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size and return foreground mask and
         target indices.
         """
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        loss = torch.zeros(4 if self.hfcd_loss else 3, device=self.device)  # box, cls, dfl[, hfcd]
         pred_distri, pred_scores = (
             preds["boxes"].permute(0, 2, 1).contiguous(),
             preds["scores"].permute(0, 2, 1).contiguous(),
@@ -431,13 +443,17 @@ class v8DetectionLoss:
         )
 
         target_scores_sum = max(target_scores.sum(), 1)
+        dahl_weight = (
+            self.hardness_weight(pred_scores, target_scores, target_bboxes, imgsz, fg_mask) if self.dahl_loss else None
+        )
 
         # Cls loss with optional class weighting
         bce_loss = self.bce(pred_scores, target_scores.to(dtype))  # (bs, num_anchors, nc)
         if self.class_weights is not None:
             bce_loss *= self.class_weights
+        if dahl_weight is not None:
+            bce_loss *= torch.where(target_scores.gt(0), dahl_weight, torch.ones_like(dahl_weight))
         loss[1] = bce_loss.sum() / target_scores_sum  # BCE
-
         # Bbox loss
         if fg_mask.sum():
             loss[0], loss[2] = self.bbox_loss(
@@ -450,16 +466,129 @@ class v8DetectionLoss:
                 fg_mask,
                 imgsz,
                 stride_tensor,
+                dahl_weight=dahl_weight,
             )
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
+        if self.hfcd_loss:
+            loss[3] = self.frequency_consistency_loss(
+                preds, batch, pred_scores, target_scores, target_bboxes, imgsz, fg_mask
+            )
         return (
             (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor),
             loss,
             loss.detach(),
         )  # loss(box, cls, dfl)
+
+    def hardness_weight(
+        self,
+        pred_scores: torch.Tensor,
+        target_scores: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        imgsz: torch.Tensor,
+        fg_mask: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Return curriculum weights for low-confidence and morphology-hard positive anchors."""
+        if not fg_mask.sum():
+            return None
+        hardness = self.hardness_score(pred_scores, target_scores, target_bboxes, imgsz)
+        progress = self.training_progress()
+        weight = (1.0 + self.dahl_gain * progress * hardness.pow(self.dahl_gamma)).clamp_max(self.dahl_max_gain)
+        return (weight / weight[fg_mask].mean().clamp_min(1e-6)).detach()
+
+    def hardness_score(
+        self,
+        pred_scores: torch.Tensor,
+        target_scores: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        imgsz: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return DAHL-style anchor hardness from classification confidence and defect morphology."""
+        target_mask = target_scores.gt(0)
+        pos_count = target_mask.sum(-1, keepdim=True).clamp_min(1)
+        pos_conf = (pred_scores.detach().sigmoid() * target_mask).sum(-1, keepdim=True) / pos_count
+        cls_hard = (1.0 - pos_conf).clamp(0.0, 1.0)
+
+        wh = (target_bboxes[..., 2:4] - target_bboxes[..., :2]).clamp_min(1.0)
+        area_ratio = (wh[..., 0:1] * wh[..., 1:2]) / (imgsz[0] * imgsz[1]).clamp_min(1.0)
+        small = ((0.20 - area_ratio.sqrt()) / 0.20).clamp(0.0, 1.0)
+        aspect = wh.amax(-1, keepdim=True) / wh.amin(-1, keepdim=True).clamp_min(1.0)
+        elongated = ((aspect - 2.0) / 4.0).clamp(0.0, 1.0)
+        morph_hard = (0.5 * small + 0.5 * elongated).clamp(0.0, 1.0)
+
+        return (0.75 * cls_hard + 0.25 * morph_hard).clamp(0.0, 1.0)
+
+    def hfcd_progress(self) -> float:
+        """Return the HFCD ramp factor after warmup."""
+        epoch = float(getattr(self.model, "current_epoch", 0)) + 1.0
+        epochs = max(float(getattr(self.hyp, "epochs", 100) or 100), 1.0)
+        if epoch <= self.hfcd_warmup_epochs:
+            return 0.0
+        return min((epoch - self.hfcd_warmup_epochs) / max(epochs - self.hfcd_warmup_epochs, 1.0), 1.0)
+
+    @staticmethod
+    def frequency_split(feat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split a feature map into local low-frequency context and high-frequency residual detail."""
+        low = F.avg_pool2d(feat, kernel_size=3, stride=1, padding=1)
+        return low, feat - low
+
+    def frequency_consistency_loss(
+        self,
+        preds: dict[str, torch.Tensor],
+        batch: dict[str, torch.Tensor],
+        pred_scores: torch.Tensor,
+        target_scores: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        imgsz: torch.Tensor,
+        fg_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute hardness-guided low/high-frequency feature consistency against the EMA teacher."""
+        gain = self.hfcd_gain * self.hfcd_progress()
+        teacher = getattr(self.model, "hfcd_teacher", None)
+        if gain <= 0.0 or teacher is None or not self.model.training or not fg_mask.sum():
+            return pred_scores.new_zeros(())
+
+        with torch.no_grad():
+            teacher_preds = self.parse_output(teacher(batch["img"]))
+        student_feats = preds.get("feats")
+        teacher_feats = teacher_preds.get("feats") if isinstance(teacher_preds, dict) else None
+        if not student_feats or not teacher_feats or len(student_feats) != len(teacher_feats):
+            return pred_scores.new_zeros(())
+
+        hardness = self.hardness_score(pred_scores, target_scores, target_bboxes, imgsz).detach()
+        total = pred_scores.new_zeros(())
+        used = 0
+        offset = 0
+        for student_feat, teacher_feat in zip(student_feats, teacher_feats):
+            b, _, h, w = student_feat.shape
+            num_anchor = h * w
+            scale_fg = fg_mask[:, offset : offset + num_anchor].view(b, 1, h, w).to(student_feat.dtype)
+            if scale_fg.sum() <= 0:
+                offset += num_anchor
+                continue
+            scale_hardness = hardness[:, offset : offset + num_anchor].view(b, 1, h, w).to(student_feat.dtype)
+            weight = scale_fg * (1.0 + scale_hardness)
+
+            student_low, student_high = self.frequency_split(student_feat)
+            teacher_low, teacher_high = self.frequency_split(teacher_feat.detach().to(dtype=student_feat.dtype))
+            low_diff = (F.normalize(student_low, dim=1) - F.normalize(teacher_low, dim=1)).abs().mean(1, keepdim=True)
+            high_diff = (F.normalize(student_high, dim=1) - F.normalize(teacher_high, dim=1)).abs().mean(1, keepdim=True)
+            scale_loss = (low_diff + self.hfcd_beta * high_diff) * weight
+            total = total + scale_loss.sum() / weight.sum().clamp_min(1.0)
+            used += 1
+            offset += num_anchor
+
+        if used == 0:
+            return pred_scores.new_zeros(())
+        return total * (gain / used)
+
+    def training_progress(self) -> float:
+        """Return epoch progress in [0, 1] for curriculum weighting."""
+        epoch = float(getattr(self.model, "current_epoch", 0))
+        epochs = max(float(getattr(self.hyp, "epochs", 100) or 100), 1.0)
+        return min(max((epoch + 1.0) / epochs, 0.0), 1.0)
 
     def parse_output(
         self, preds: dict[str, torch.Tensor] | tuple[torch.Tensor, dict[str, torch.Tensor]]

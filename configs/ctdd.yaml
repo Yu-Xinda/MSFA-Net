@@ -1,0 +1,5 @@
+# CTDD experiment configuration.
+dataset: ctdd
+data_root: data/CTDD
+data_yaml: data/CTDD/ctdd.yaml
+save_dir: runs

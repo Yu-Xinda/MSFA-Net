@@ -205,6 +205,12 @@ CFG_FLOAT_KEYS = frozenset(
         "time",
         "workspace",
         "batch",
+        "dahl_gain",
+        "dahl_gamma",
+        "dahl_max_gain",
+        "hfcd_gain",
+        "hfcd_beta",
+        "hfcd_warmup_epochs",
     }
 )
 CFG_FRACTION_KEYS = frozenset(
@@ -291,6 +297,8 @@ CFG_BOOL_KEYS = frozenset(
         "profile",
         "end2end",
         "cls_remap",
+        "dahl_loss",
+        "hfcd_loss",
     }
 )
 CFG_STR_KEYS = frozenset({"optimizer", "split", "copy_paste_mode", "auto_augment"})

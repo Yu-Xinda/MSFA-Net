@@ -410,6 +410,7 @@ class BaseTrainer:
         self._oom_retries = 0  # OOM auto-reduce counter for first epoch
         while True:
             self.epoch = epoch
+            unwrap_model(self.model).current_epoch = epoch
             self.run_callbacks("on_train_epoch_start")
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")  # suppress 'Detected lr_scheduler.step() before optimizer.step()'
@@ -454,6 +455,8 @@ class BaseTrainer:
                 try:
                     with autocast(self.amp):
                         batch = self.preprocess_batch(batch)
+                        if getattr(self.args, "hfcd_loss", False) and self.ema:
+                            unwrap_model(self.model).hfcd_teacher = unwrap_model(self.ema.ema)
                         if self.args.compile:
                             # Decouple inference and loss calculations for improved compile performance
                             preds = self.model(batch["img"])
