@@ -1,5 +1,5 @@
 <div align="center">
-  <h2>Multi-Scale Frequency-Aware and Difficulty-Adaptive Learning for Industrial Surface Defect Detection</h4>
+  <h1>Multi-Scale Frequency-Aware and Difficulty-Adaptive Learning for Industrial Surface Defect Detection</h1>
 </div>
 
 ## 📬 News
