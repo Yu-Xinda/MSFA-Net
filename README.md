@@ -1,5 +1,5 @@
 <div align="center">
-  <h4>Multi-Scale Frequency-Aware and Difficulty-Adaptive Learning for Industrial Surface Defect Detection</h4>
+  <h2>Multi-Scale Frequency-Aware and Difficulty-Adaptive Learning for Industrial Surface Defect Detection</h4>
 </div>
 
 ## 📬 News
@@ -10,7 +10,7 @@
 ## 🛠️ Method Overview
 
 <p align="center">
-  <img src="assets/pipline.png" alt="Our method pipeline" width="100%" />
+  <img src="assets/method.png" alt="Our method pipeline" width="100%" />
 </p>
 
 This project targets industrial surface-defect detection, where small, elongated, low-contrast, and texture-confusable defects are common. The detector uses YOLO11n as the base architecture and introduces three complementary components:
