@@ -1,10 +1,6 @@
 <div align="center">
-  <h4>YOLO11n-based Industrial Defect Detection with Difficulty-Aware Supervision and Frequency-Adaptive Features</h4>
+  <h4>Multi-Scale Frequency-Aware and Difficulty-Adaptive Learning for Industrial Surface Defect Detection</h4>
 </div>
-
-<p align="center">
-  A lightweight industrial defect detector that combines <b>DAHL</b>, <b>FAFM</b>, and <b>HFCD</b> on top of YOLO11n.
-</p>
 
 ## 📬 News
 
@@ -42,7 +38,13 @@ This repository contains a modified local `ultralytics/` package. Run commands f
 
 ### Dataset Configuration
 
-Each dataset has an independent experiment configuration in `configs/`
+Each dataset has an independent experiment configuration under `configs/`.
+
+The datasets used in this project are:
+
+* **NEU-DET**: [Official Website](http://faculty.neu.edu.cn/songkechen/zh_CN/zdylm/263270/list/)
+* **GC10-DET**: [Dataset Download](https://pan.baidu.com/share/init?surl=eWz-4PHrNf_m_C8P3GJybQ)
+  **Extraction code:** `2drc`
 
 ### Training
 
@@ -73,7 +75,7 @@ runs/neu_det/weights/predictions_val/
 
 ## 🗓️ TODO
 
-- [x] Release the YOLO11n + DAHL + FAFM + HFCD implementation
+- [x] Release the Ours implementation
 - [x] Provide dataset-specific training configurations
 - [x] Provide training and validation entry points
 - [ ] Release trained checkpoints and benchmark tables
